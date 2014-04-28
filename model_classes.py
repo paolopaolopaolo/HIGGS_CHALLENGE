@@ -1,4 +1,4 @@
-import numpy as np, sys, scipy as sp, csv,random
+import numpy as np, sys, scipy as sp, csv,random,pickle
 from scipy import optimize
 
 class Logistic_Regression_Model():
@@ -33,6 +33,12 @@ class Logistic_Regression_Model():
 	JHistory=[]
 	res=None
 
+	def save(self,filename):
+		self.__dict__={'m':self.m,'X':self.X,'y':self.y,'theta':self.theta,'alpha':self.alpha,'lamb':self.lamb,'JHistory':self.JHistory,'res':self.res}
+		with open(filename,'wb') as dest:
+			pickle.dump(self, dest)
+
+
 	def __init__(self , X , y , mean_norm=None):
 
 		"""Initialize internal arrays, preprocess 
@@ -40,7 +46,6 @@ class Logistic_Regression_Model():
 
 		try:
 			self.m=len(y)
-			#self.X=X
 			self.X=np.hstack((np.ones((self.m,1)),X))
 			self.y=y.reshape((self.m,1))
 			self.theta=np.zeros((len(self.X[0]),1))
@@ -242,7 +247,6 @@ class Logistic_Regression_Model():
 
 	def test(self, test_set_filename):
 		data=np.loadtxt(test_set_filename, delimiter=",")
-
 		m=data.shape[0]
 		tries=m
 		
@@ -295,13 +299,21 @@ class Neural_Network_Model():
 	This model will use the sigmoidal logistic function as the 
 	activation function and comes with a choice of 1,2 or 3 
 	hidden layers of varying node number. The backpropagation
-	algorithm is used to train the neural network
+	algorithm is used to populate the cost and gradient
+	of the neural network. 
+
+	The model can then be optimized by various advanced 
+	optimization techniques using the scipy.optimize.minimize()
+	method.
 
 	"""
 
 	## Architecture ##
 	data_file=""
+	JHistory=[]
 	m=0
+	mtrain=0
+	mtest=0
 	lamb=0
 	y_col=0
 	input_nodes=0
@@ -310,12 +322,16 @@ class Neural_Network_Model():
 	output_nodes=0
 
 	## Parameters ##
-	init_nnparams=None
-	nnparams=None
+	init_nnparams=0
+	nnparams=0
 	Theta1_par=(0,0)
 	Theta2_par=(0,0)
 	Theta3_par=(0,0)
 	ThetaEnd_par=None
+	res=None
+	check_gradients=None
+	actual_grad=None
+	diff= None
 
 	def mult_tuple(self,tuple):
 		res=1
@@ -333,6 +349,7 @@ class Neural_Network_Model():
 				print "Warning: Invalid value. 1 hidden layer selected."
 			
 			self.hidden_layer_nodes=[]
+			
 			for i in range(0,self.hidden_layer_num):
 				add_nodes=int(raw_input("How many nodes will be added to hidden layer "+str(i+1)+"?: "))
 
@@ -359,11 +376,13 @@ class Neural_Network_Model():
 
 				self.Theta3_par=(self.hidden_layer_nodes[2],self.hidden_layer_nodes[1]+1)
 				
-		self.init_nnparams=np.random.rand(self.mult_tuple(self.Theta1_par)+self.mult_tuple(self.ThetaEnd_par)+self.mult_tuple(self.Theta2_par)+self.mult_tuple(self.Theta3_par),)*(2*eps)-eps
+		self.init_nnparams=np.random.rand(self.mult_tuple(self.Theta1_par)\
+			+self.mult_tuple(self.ThetaEnd_par)+self.mult_tuple(self.Theta2_par)\
+			+self.mult_tuple(self.Theta3_par),)*(2*eps)-eps
 		self.nnparams=np.zeros_like(self.init_nnparams)
 
 
-	def __init__(self, filename, y_col, m=None, input_nodes=0, hidden_layer_num=0, hidden_layer_nodes=[], output_nodes=0):
+	def __init__(self, filename, y_col, input_nodes=0, hidden_layer_num=0, hidden_layer_nodes=[], output_nodes=0):
 		"""filenames= the string path of the CSV data to be fed into the model
 		y_col= integer value of the column of the training instance (0 indexed)
 		hidden_layer_num= number of hidden layers (can be 1-3)
@@ -372,17 +391,13 @@ class Neural_Network_Model():
 		output_nodes= number of output nodes"""
 
 		#checks number of rows in file
-		if m is None:
-			infile=open(filename,'rb')
-			for line in infile:
-				self.m+=1
-			infile.close()
-		else:
-			self.m=m
-
+		infile=open(filename,'rb')
+		for line in infile:
+			self.m+=1
+		infile.close()
+		
 		if self.data_file!="":
 			self.data_file=""
-
 		
 		self.data_file+=filename
 		self.y_col= y_col
@@ -392,6 +407,7 @@ class Neural_Network_Model():
 
 		if self.hidden_layer_num != len(hidden_layer_nodes):
 			raise IndexError
+
 		self.output_nodes=output_nodes
 		
 		if input_nodes==0 or hidden_layer_num==0 or len(hidden_layer_nodes)==0 or output_nodes==0:
@@ -413,28 +429,44 @@ class Neural_Network_Model():
 	def __call__(self, filename):
 		pass
 
-	def train(self, opt=None,lamb=0):
+	def train(self, opt="BFGS",lamb=None,m=None,grad_chck=False):
 
-		self.lamb=lamb
+		if m is None:
+			self.mtrain=self.m*(0.75)
+
+		else:
+			self.mtrain=m
+
+		if lamb is None:
+			lamb=float(self.lamb) #Default: lamb=0
+		else:
+			self.lamb=float(lamb)
 
 		def sigmoidGradient(z):
-			return (1.0/(1.0+np.e**-z))*(1.0-(1.0/1.0+np.e**-z))
+			return (1.0/(1.0+np.e**-z))*(1.0-(1.0/(1.0+np.e**-z)))
 
 		def sigmoid(z):
 			return 1.0/(1.0+np.e**-z)
 
-		other_args=(self.data_file,self.y_col,self.m,self.lamb,self.Theta1_par,self.Theta2_par,self.Theta3_par,self.ThetaEnd_par,self.input_nodes,self.hidden_layer_num,self.hidden_layer_nodes,self.output_nodes)
+		def mult_tuple(tupl):
+			res=1
+			for i in tupl:
+				res*=i
+			return res
 
-		def cost(nnparams,data_file,y_col,m,lamb,Theta1_par,Theta2_par,Theta3_par,ThetaEnd_par,input_nodes,hidden_layer_num, hidden_layer_nodes, output_nodes):
+		other_args=(self.data_file,self.y_col,self.mtrain,self.lamb,self.Theta1_par,self.Theta2_par,self.Theta3_par,\
+			self.ThetaEnd_par,self.input_nodes,self.hidden_layer_num,self.hidden_layer_nodes,self.output_nodes,grad_chck)
 
-			def mult_tuple(tupl):
-				res=1
-				for i in tupl:
-					res*=i
-				return res
+		def cost(nnparams,data_file,y_col,m,lamb,Theta1_par,Theta2_par,Theta3_par,\
+			ThetaEnd_par,input_nodes,hidden_layer_num, hidden_layer_nodes, output_nodes, grad_chck):
 
-			with open(data_file,"rb") as f: # self.data_file
+			# Pull data from data file
+
+			with open(data_file,"rb") as f: 
 				row_read=csv.reader(f,delimiter=",")
+
+				# Identity Matrix will serve as y-map
+				# Initialize Theta1-ThetaEnd Matrices
 
 				ymap=np.eye(output_nodes,dtype=float) # self.output_nodes
 				Theta1=nnparams[0:(mult_tuple(Theta1_par))].reshape(Theta1_par) # self.nnparams, self.Theta1_par
@@ -442,22 +474,30 @@ class Neural_Network_Model():
 				Theta3=0
 				ThetaEnd=0
 
-				#Populate parameters with randomized values (randomized in randomize_nnparams method).
+				# Populate parameters with randomized values (randomized in randomize_nnparams method).
+				# Reshape parameters into Theta1-ThetaEnd
 
 				if hidden_layer_num==1: #self.hidden_layer_num
 					ThetaEnd=nnparams[(mult_tuple(Theta1_par)):(mult_tuple(Theta1_par)+mult_tuple(ThetaEnd_par))].reshape(ThetaEnd_par)
 					
 				elif hidden_layer_num==2:
 					Theta2=nnparams[(mult_tuple(Theta1_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par))].reshape(Theta2_par)
-					ThetaEnd=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+mult_tuple(ThetaEnd_par)+1)].reshape(ThetaEnd_par)
+					ThetaEnd=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+\
+						mult_tuple(ThetaEnd_par)+1)].reshape(ThetaEnd_par)
 
 				else:
 					Theta2=nnparams[(mult_tuple(Theta1_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par))].reshape(Theta2_par)
-					Theta3=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+mult_tuple(Theta3_par))].reshape(Theta3_par)
-					ThetaEnd=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+mult_tuple(Theta3_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+mult_tuple(Theta3_par)+mult_tuple(ThetaEnd_par)+1)].reshape(ThetaEnd_par)
+					Theta3=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+\
+						mult_tuple(Theta3_par))].reshape(Theta3_par)
+					ThetaEnd=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+mult_tuple(Theta3_par)):(mult_tuple(Theta1_par)+\
+						mult_tuple(Theta2_par)+mult_tuple(Theta3_par)+mult_tuple(ThetaEnd_par)+1)].reshape(ThetaEnd_par)
 					
+				# Initialize Cost and Gradient 
+
 				J=0
 				grad=np.zeros_like(nnparams)
+
+				# Initialize Theta1-ThetaEnd Gradient Matrices
 
 				Theta1_grad=np.zeros_like(Theta1)
 				ThetaEnd_grad=np.zeros_like(ThetaEnd)
@@ -470,24 +510,40 @@ class Neural_Network_Model():
 					if hidden_layer_num == 3:
 						Theta3_grad=np.zeros_like(Theta3)
 
+				# For-loop that iterates through each example of dataset
+
 				for i in range(0,m):
-					#Load in Row
+
+					# Load in Row, Marking X and y in each row
+					# If input_nodes is less than the total feature in X,
+					# then extra features will be omitted
+
+					# y value is automatically mapped to form appropriate sized vector
+					
 					ROW=row_read.next()
 					data=np.array(ROW, dtype=float)
+					##NEW EDITS: BINARY CLASS PROBLEMS ONLY GET 1 OUTPUT NODE
+					#if output_nodes>=2:
 					y=ymap[:,int(data[y_col])].reshape((output_nodes,1)) # output_nodes x 1
-					X=np.hstack((1.0,sp.delete(data,y_col))) # 1 x (n+1)
+					#else:
+					#	y=int(data[y_col]).reshape((output_nodes,1))
+					X=np.hstack((1.0,sp.delete(data,y_col)))[0:input_nodes+1] # 1 x (n+1)
 			
-					#Forward Propagation
-					z2=np.dot(Theta1,X.reshape((len(X),1)))  #(hidden_layer_node[0] x n+1) X (n+1 x 1) = hidden_layer_node[0] x 1		
-					a2=np.vstack((1.0, sigmoidGradient(z2))) # (hidden_layer_node [0] + 1 )x 1
-					aEnd=np.zeros((output_nodes,1))
+					# Forward Propagation
+					# Calculates aEnd Node, then accumulates J
+
+					z2=np.dot(Theta1,X.reshape((len(X),1)))  # (hidden_layer_node[0] x n+1) X (n+1 x 1) = hidden_layer_node[0] x 1		
+					a2=np.vstack((1.0, sigmoid(z2))) # (hidden_layer_node [0] + 1 ) x 1
+					aEnd=np.zeros((output_nodes,1)) # output_nodes X 1 
+
+
 					if hidden_layer_num==1:
-						z3=np.dot(ThetaEnd,a2) # (output_node x (hidden_layer_node [0] + 1 )) x ((hidden_layer_node [0] + 1) x 1)
-						a3=sigmoid(z3)
-						aEnd=a3
+						z3=np.dot(ThetaEnd,a2) # (output_node x (hidden_layer_node [0] + 1 )) x ((hidden_layer_node [0] + 1) x 1) = output_node X 1
+						a3=sigmoid(z3) # output_node X 1
+						aEnd=a3 # output_node X 1
 
 					elif hidden_layer_num==2:
-						z3=np.dot(Theta2,a2)
+						z3=np.dot(Theta2,a2) 
 						a3=np.vstack((1.0,sigmoid(z3)))
 						z4=np.dot(ThetaEnd,a3)
 						a4=sigmoid(z4)
@@ -502,10 +558,13 @@ class Neural_Network_Model():
 						a5=sigmoid(z5)
 						aEnd=a5
 
-					#Compute J and add to current J
-					J=J-sum(y*np.log(aEnd)+(1.0-y)*np.log(1.0-aEnd))[0]
+					# Compute J and accumulate J
+
+					J = J - sum(y*np.log(aEnd)+(1.0-y)*np.log(1.0-aEnd))[0]
 					
-					#Backward Propagation
+					# Backward Propagation
+					# Use aEnd and current weights to compute delta (error) for each node column 
+
 					deltEnd=np.zeros(aEnd.shape)
 					deltEnd=aEnd-y
 
@@ -533,29 +592,267 @@ class Neural_Network_Model():
 						Theta2_grad=Theta2_grad+np.dot(delt3[1:,:],a2.transpose())
 						Theta1_grad=Theta1_grad+np.dot(delt2[1:,:],X.reshape((1,len(X))))
 						
-					
-					print "\b"*50+str(i)+"/"+str(m)+" rows",
+					if grad_chck is False:
+						if i+1<m:
+							print "\b"*50+str(i+1)+"/"+str(m)+" rows",
+						else:
+							print "\b"*50+str(i+1)+"/"+str(m)+" rows"
 
 				J=(1.0/m)*J
-				J=J+(lamb/(2*m))*sum(nnparams**2)
 
-				Theta1_grad=(1.0/m)*Theta1_grad
+				if self.hidden_layer_num==1:
+					J=J+(lamb/(2.*m))*(sum(sum(Theta1[:,1:]**2))+sum(sum(ThetaEnd[:,1:]**2)))
+
+				elif self.hidden_layer_num==2:
+					J=J+(lamb/(2.*m))*(sum(sum(Theta1[:,1:]**2))+sum(sum(ThetaEnd[:,1:]**2))+sum(sum(Theta2[:,1:]**2)))
+
+				else:
+					J=J+(lamb/(2.*m))*(sum(sum(Theta1[:,1:]**2))+sum(sum(ThetaEnd[:,1:]**2))+sum(sum(Theta2[:,1:]**2))+sum(sum(Theta3[:,1:]**2)))
+
+
+				Theta1_grad=(1.0/m)*Theta1_grad + (lamb/m)*np.hstack((np.zeros((Theta1[:,0].shape[0],1)),Theta1[:,1:]))
+				ThetaEnd_grad=(1.0/m)*ThetaEnd_grad + (lamb/m)*np.hstack((np.zeros((ThetaEnd[:,0].shape[0],1)),ThetaEnd[:,1:]))
 				Theta2_grad=(1.0/m)*Theta2_grad
 				Theta3_grad=(1.0/m)*Theta3_grad
-				ThetaEnd_grad=(1.0/m)*ThetaEnd_grad
 
 				if hidden_layer_num==1:
 					grad=np.hstack((Theta1_grad.reshape((mult_tuple(Theta1_grad.shape),)),ThetaEnd_grad.reshape((mult_tuple(ThetaEnd_grad.shape),))))
 
 				elif hidden_layer_num==2:
-					grad=np.hstack((Theta1_grad.reshape((mult_tuple(Theta1_grad.shape),)),ThetaEnd_grad.reshape((mult_tuple(ThetaEnd_grad.shape),)),Theta2_grad.reshape((mult_tuple(Theta2_grad.shape),))))
+					Theta2_grad=Theta2_grad+(lamb/m)*np.hstack((np.zeros((Theta2[:,0].shape[0],1)),Theta2[:,1:]))
+					grad=np.hstack((Theta1_grad.reshape((mult_tuple(Theta1_grad.shape),)),Theta2_grad.reshape((mult_tuple(Theta2_grad.shape),)),\
+						ThetaEnd_grad.reshape((mult_tuple(ThetaEnd_grad.shape),))))
 				
 				else:
-					grad=np.hstack((Theta1_grad.reshape((mult_tuple(Theta1_grad.shape),)),ThetaEnd_grad.reshape((mult_tuple(ThetaEnd_grad.shape),)),Theta2_grad.reshape((mult_tuple(Theta2_grad.shape),)),Theta3_grad.reshape((mult_tuple(Theta3_grad.shape),))))
+					Theta2_grad=Theta2_grad+(lamb/m)*np.hstack((np.zeros((Theta2[:,0].shape[0],1)),Theta2[:,1:]))
+					Theta3_grad=Theta3_grad+(lamb/m)*np.hstack((np.zeros((Theta3[:,0].shape[0],1)),Theta3[:,1:]))
+					grad=np.hstack((Theta1_grad.reshape((mult_tuple(Theta1_grad.shape),)),Theta2_grad.reshape((mult_tuple(Theta2_grad.shape),)),\
+						Theta3_grad.reshape((mult_tuple(Theta3_grad.shape),)),ThetaEnd_grad.reshape((mult_tuple(ThetaEnd_grad.shape),))))
+			
+				grad=grad.reshape((len(nnparams),))
+				self.actual_grad=grad
 
 				return (J,grad)
 
-		#def gradient(nnparams,data_file,y_col,m,lamb,Theta1_par,Theta2_par,Theta3_par,ThetaEnd_par,input_nodes,hidden_layer_num, hidden_layer_nodes, output_nodes):
+		def grad_check(J,theta):		
+			e=1e-4
+			perturb=np.zeros_like(theta)
+			grad_est=np.zeros_like(theta)
+			for p in range(0,len(theta)):
+				perturb[p]=e
+				loss1=J(theta-perturb,self.data_file,self.y_col,self.mtrain,self.lamb,self.Theta1_par,self.Theta2_par,self.Theta3_par,\
+					self.ThetaEnd_par,self.input_nodes,self.hidden_layer_num,self.hidden_layer_nodes,self.output_nodes,\
+					grad_chck)[0]
+				loss2=J(theta+perturb,self.data_file,self.y_col,self.mtrain,self.lamb,self.Theta1_par,self.Theta2_par,self.Theta3_par,\
+					self.ThetaEnd_par,self.input_nodes,self.hidden_layer_num,self.hidden_layer_nodes,self.output_nodes,\
+					grad_chck)[0]
+				grad_est[p]=(loss2-loss1)/(2*e)
+				perturb[p]=0
+			
+			return grad_est
 
-		self.nnparams=sp.optimize.minimize(fun=cost, x0=self.init_nnparams, jac=True, method=opt,options={'maxiter':75,'disp':True}, args=other_args)
+		if grad_chck is True:
+			self.check_gradients=grad_check(cost,self.init_nnparams)
+			diff=0
+			diff=sum(self.actual_grad-self.check_gradients)
+			self.diff=diff
+
+
+		result=sp.optimize.minimize(fun=cost, x0=self.init_nnparams, jac=True, method=opt, options={'maxiter':400,'disp':True}, args=other_args)
+		self.nnparams=result.x
+		self.res=result
+		self.JHistory.append(("train",self.mtrain,self.lamb,result.fun))
+
+	def test(self, testset_file_name, mtest=None, man_check=False):
+		y_col=self.y_col
+
+		if mtest is None:
+			self.mtest=int(self.mtrain*(0.25))
+		else:
+			self.mtest=mtest
+
+		def sigmoid(z):
+			return 1.0/(1.0+np.e**-z)
+
+		def mult_tuple(tupl):
+			res=1
+			for i in tupl:
+				res*=i
+			return res
+
+		
+		def test_cost(testset, nnparams, y_col, mtest,lamb,input_nodes,hidden_layer_num,hidden_layer_nodes,output_nodes,Theta1_par,\
+			Theta2_par,Theta3_par,ThetaEnd_par,man_check):
+
+			with open(testset,'rb') as csvfile:
+				row_read=csv.reader(csvfile,delimiter=",")
+
+				ymap=np.eye(output_nodes,dtype=float) # self.output_nodes
+				Theta1=nnparams[0:(mult_tuple(Theta1_par))].reshape(Theta1_par) # self.nnparams, self.Theta1_par
+				Theta2=0
+				Theta3=0
+				ThetaEnd=0
+
+				#Populate parameters with randomized values (randomized in randomize_nnparams method).
+
+				if hidden_layer_num==1: #self.hidden_layer_num
+					ThetaEnd=nnparams[(mult_tuple(Theta1_par)):(mult_tuple(Theta1_par)+mult_tuple(ThetaEnd_par))].reshape(ThetaEnd_par)
+					
+				elif hidden_layer_num==2:
+					Theta2=nnparams[(mult_tuple(Theta1_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par))].reshape(Theta2_par)
+					ThetaEnd=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+\
+						mult_tuple(ThetaEnd_par)+1)].reshape(ThetaEnd_par)
+
+				else:
+					Theta2=nnparams[(mult_tuple(Theta1_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par))].reshape(Theta2_par)
+					Theta3=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)):(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+\
+						mult_tuple(Theta3_par))].reshape(Theta3_par)
+					ThetaEnd=nnparams[(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+mult_tuple(Theta3_par)):\
+						(mult_tuple(Theta1_par)+mult_tuple(Theta2_par)+mult_tuple(Theta3_par)+mult_tuple(ThetaEnd_par)+1)].reshape(ThetaEnd_par)
+					
+				J=0
+				hyp=np.zeros((output_nodes,mtest))
+				yval=np.zeros((output_nodes,mtest))
+
+				for i in range(0,mtest):
+					#Load in Row
+					ROW=row_read.next()
+					data=np.array(ROW, dtype=float)
+					
+					y=ymap[:,int(data[y_col])].reshape((output_nodes,1)) # output_nodes x 1
+					yval[:,i]=y.reshape((output_nodes,))
+					
+					X=np.hstack((1.0,sp.delete(data,y_col)))[0:input_nodes+1] # 1 x (n+1)
+					
+					#Forward Propagation
+					z2=np.dot(Theta1,X.reshape((len(X),1)))  #(hidden_layer_node[0] x n+1) X (n+1 x 1) = hidden_layer_node[0] x 1		
+					a2=np.vstack((1.0, sigmoid(z2))) # (hidden_layer_node [0] + 1 )x 1
+					aEnd=np.zeros((output_nodes,1))
+
+					if hidden_layer_num==1:
+						z3=np.dot(ThetaEnd,a2) # (output_node x (hidden_layer_node [0] + 1 )) x ((hidden_layer_node [0] + 1) x 1)
+						a3=sigmoid(z3)
+						aEnd=a3
+
+					elif hidden_layer_num==2:
+						z3=np.dot(Theta2,a2)
+						a3=np.vstack((1.0,sigmoid(z3)))
+						z4=np.dot(ThetaEnd,a3)
+						a4=sigmoid(z4)
+						aEnd=a4
+
+					else:
+						z3=np.dot(Theta2,a2)
+						a3=np.vstack((1.0,sigmoid(z3)))
+						z4=np.dot(Theta3,a3)
+						a4=np.vstack((1.0,sigmoid(z4)))
+						z5=np.dot(ThetaEnd,a4)
+						a5=sigmoid(z5)
+						aEnd=a5
+
+
+					guess=np.zeros_like(aEnd)
+					for j in range(0,len(aEnd)):
+						if aEnd[j]>=np.max(aEnd):
+							guess[j]=1.0
+
+					hyp[:,i]=guess.reshape((output_nodes,))
+	
+					
+					#Compute J and add to current J
+					J=J-sum(y*np.log(aEnd)+(1.0-y)*np.log(1.0-aEnd))[0]
+					if i+1<mtest:
+						print "\b"*80+str(i+1)+"/"+str(mtest)+" rows",
+					else:
+						print "\b"*80+str(i+1)+"/"+str(mtest)+" rows"
+
+				J=(1.0/mtest)*J
+				if self.hidden_layer_num==1:
+					J=J+(lamb/(2.0*mtest))*(sum(sum(Theta1[:,1:]**2))+sum(sum(ThetaEnd[:,1:]**2)))
+
+				elif self.hidden_layer_num==2:
+					J=J+(lamb/(2.0*mtest))*(sum(sum(Theta1[:,1:]**2))+sum(sum(ThetaEnd[:,1:]**2))+sum(sum(Theta2[:,1:]**2)))
+
+				else:
+					J=J+(lamb/(2.0*mtest))*(sum(sum(Theta1[:,1:]**2))+sum(sum(ThetaEnd[:,1:]**2))+sum(sum(Theta2[:,1:]**2))+sum(sum(Theta3[:,1:]**2)))
+
+				accurate_guesses=0
+				
+					
+				for k in range(0,mtest):
+					if man_check is True:
+						print hyp[:,k], 
+						print yval[:,k],
+					if str(hyp[:,k])==str(yval[:,k]):	
+						if man_check is True:
+							print "\nGood"
+						accurate_guesses+=1
+
+					else:
+						if man_check is True:
+							print "\nBad"
+
+					if man_check is True:
+						raw_input("Press Enter to Continue")
+
+				return (J,float(accurate_guesses)/mtest)
+
+		args=(self.nnparams,self.y_col,self.mtest,self.lamb,self.input_nodes,self.hidden_layer_num,self.hidden_layer_nodes,\
+			self.output_nodes,self.Theta1_par,self.Theta2_par,self.Theta3_par,self.ThetaEnd_par,man_check)
+
+		result=test_cost(testset_file_name, args[0], args[1], args[2], args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],args[12])
+		self.JHistory.append(("test/cv",self.mtrain,self.lamb,result[0]))
+		print "Guess Accuracy: "+str(result[1])
+
+	def save(self,filename=None):
+		self.__dict__={"data_file":self.data_file,"JHistory":self.JHistory,"m":self.m, "mtrain":self.mtrain, "mtest":self.mtest, "lamb":self.lamb,\
+		    "y_col":self.y_col,\
+			"input_nodes":self.input_nodes,"hidden_layer_num":self.hidden_layer_num,"hidden_layer_nodes":self.hidden_layer_nodes,\
+			"output_nodes":self.output_nodes,"init_nnparams":self.init_nnparams,"nnparams":self.nnparams,"Theta1_par":self.Theta1_par, \
+			"Theta2_par":self.Theta2_par,"Theta3_par":self.Theta3_par,"ThetaEnd_par":self.ThetaEnd_par,"check_gradients":self.check_gradients, \
+			"diff":self.diff}
+	
+		if filename is None:
+			saveas=raw_input("Save name?")
+
+			with open(os.path.join("../saved",saveas),'wb') as dest:
+				pickle.dump(self, dest)
+
+		else:
+			with open(filename,'wb') as dest:
+				pickle.dump(self, dest)
+
+	def plot_LC(self):
+
+		import matplotlib.pyplot as mpl
+
+		def Xsort(item):
+			return item[1]
+
+		self.JHistory=sorted(self.JHistory, key=Xsort)
+		
+		J_train_x=[]
+		J_train_y=[]
+		J_cv_x=[]
+		J_cv_y=[]
+
+		for tupl in self.JHistory:
+			if tupl[0]=="train" and tupl[2]==0:
+				J_train_x.append(tupl[1])
+				J_train_y.append(tupl[3])
+
+			elif tupl[0]=="test/cv" and tupl[2]==0:
+				J_cv_x.append(tupl[1])
+				J_cv_y.append(tupl[3])
+
+		mpl.plot(J_train_x,J_train_y,"r-"),mpl.plot(J_cv_x,J_cv_y,"b-"),mpl.legend(["J-Train","J-CV"]),mpl.xlabel("iterations in training set (m)"),\
+			mpl.ylabel("cost(J)")
+
+		mpl.show()
+
+	def plot_Lambda(self,mtrain):
+
+		import matplotlib.pyplot as mpl
+
+
 
